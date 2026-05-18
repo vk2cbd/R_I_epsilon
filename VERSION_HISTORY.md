@@ -1,5 +1,15 @@
 # Version History
 
+## 0.2.4-beta - Committed Inputs and Averaging Draw Throttle
+
+- Text-entry GUI parameters now commit only when the user presses Enter in an
+  entry field; partially typed values are no longer applied while running.
+- Runtime config, continuum settings, scale settings, and saved settings now use
+  the last committed text-entry values.
+- Reduced B210 plot redraw rate while the cross-correlation average is refilling
+  so GUI drawing is less likely to interrupt continuous hardware streaming.
+- Added averaging fill percentage to the runtime status line.
+
 ## 0.2.3-beta - B210 Stream-First Backpressure
 
 - Prioritized continuous B210 draining by dropping excess FFT blocks before

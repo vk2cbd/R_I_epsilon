@@ -73,9 +73,15 @@ class FXCorrelator:
             np.fft.fftfreq(config.bins, d=1.0 / config.sample_rate_hz)
         )
         self.lag_bins = np.arange(-config.bins // 2, config.bins // 2)
+        self._processed_blocks = 0
 
     def reset(self) -> None:
         self._integrated_cross = None
+        self._processed_blocks = 0
+
+    @property
+    def averaging_fill_fraction(self) -> float:
+        return min(1.0, self._processed_blocks / self.config.averaging_blocks)
 
     def process(self, antenna_a: np.ndarray, antenna_b: np.ndarray) -> CorrelatorResult:
         """Correlate two complex sample blocks and return integrated products."""
@@ -93,6 +99,7 @@ class FXCorrelator:
         else:
             alpha = self.config.integration_alpha
             self._integrated_cross = (1.0 - alpha) * self._integrated_cross + alpha * cross
+        self._processed_blocks += 1
 
         shifted_cross = np.fft.fftshift(self._integrated_cross)
         interferogram = np.fft.fftshift(np.fft.ifft(self._integrated_cross))

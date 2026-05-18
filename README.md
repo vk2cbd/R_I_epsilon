@@ -70,7 +70,7 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
   is off by default.
 - Spectrum smoothing bins for the plotted spectrum envelope line.
 - Live parameter updates while the app is running. Stream and correlator
-  settings are re-applied after valid edits.
+  settings are re-applied after a text-entry value is committed with Enter.
 - Saved GUI settings are restored the next time the app starts.
 - Auto/manual Y-axis scaling controls for the interferogram and spectrum plots.
 - Realtime strongest-lag marker and SNR estimate on the interferogram plot.
@@ -83,6 +83,8 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
 - B210 stream-first backpressure controls: queued FFT blocks and FFT
   blocks/update limit Python processing so the app can drop display data before
   the hardware stream is starved.
+- B210 plot redraw throttling while cross-correlation averaging is refilling,
+  reducing GUI load during the noisiest settling period.
 - Baseline east/north/up in meters for geometric phase simulation.
 - B210 manual gain, read timeout, and optional SoapySDR device args.
 

@@ -7,6 +7,7 @@ from math import ceil
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
+from time import monotonic
 
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -28,6 +29,7 @@ from .sources import (
 )
 
 GUI_REFRESH_MS = 80
+AVERAGING_DRAW_REFRESH_MS = 500
 LIVE_APPLY_DELAY_MS = 800
 SETTINGS_PATH = Path.home() / ".radio_interferometer_beta_settings.json"
 
@@ -97,6 +99,16 @@ class InterferometryApp(tk.Tk):
         self._runtime_apply_after_id: str | None = None
         self._loading_settings = True
         self._settings = load_settings()
+        self._committed_inputs = {
+            key: self._settings.get(key, default) for key, _, default in FIELD_DEFAULTS
+        }
+        self._committed_continuum_inputs = {
+            key: self._settings.get(key, default) for key, _, default in CONTINUUM_FIELD_DEFAULTS
+        }
+        self._committed_scale_inputs = {
+            key: self._settings.get(key, default) for key, _, default in SCALE_FIELD_DEFAULTS
+        }
+        self._last_draw_time = 0.0
 
         self._build_controls()
         self._build_plots()
@@ -232,7 +244,9 @@ class InterferometryApp(tk.Tk):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
             value = tk.StringVar(value=self._settings.get(key, default))
             self.inputs[key] = value
-            ttk.Entry(panel, textvariable=value, width=18).grid(row=row, column=1, sticky="ew", pady=3)
+            entry = ttk.Entry(panel, textvariable=value, width=18)
+            entry.grid(row=row, column=1, sticky="ew", pady=3)
+            entry.bind("<Return>", self._commit_text_fields)
 
         continuum_row = len(FIELD_DEFAULTS) + 6
         self.continuum_inputs: dict[str, tk.StringVar] = {}
@@ -240,7 +254,9 @@ class InterferometryApp(tk.Tk):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
             value = tk.StringVar(value=self._settings.get(key, default))
             self.continuum_inputs[key] = value
-            ttk.Entry(panel, textvariable=value, width=18).grid(row=row, column=1, sticky="ew", pady=3)
+            entry = ttk.Entry(panel, textvariable=value, width=18)
+            entry.grid(row=row, column=1, sticky="ew", pady=3)
+            entry.bind("<Return>", self._commit_text_fields)
 
         scale_row = continuum_row + len(CONTINUUM_FIELD_DEFAULTS)
         self.scale_inputs: dict[str, tk.StringVar] = {}
@@ -248,10 +264,12 @@ class InterferometryApp(tk.Tk):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
             value = tk.StringVar(value=self._settings.get(key, default))
             self.scale_inputs[key] = value
-            ttk.Entry(panel, textvariable=value, width=18).grid(row=row, column=1, sticky="ew", pady=3)
+            entry = ttk.Entry(panel, textvariable=value, width=18)
+            entry.grid(row=row, column=1, sticky="ew", pady=3)
+            entry.bind("<Return>", self._commit_text_fields)
 
         scale_button_row = scale_row + len(SCALE_FIELD_DEFAULTS)
-        ttk.Button(panel, text="Apply Scales", command=self._apply_plot_scales).grid(
+        ttk.Button(panel, text="Apply Scales", command=self._commit_text_fields).grid(
             row=scale_button_row, column=0, sticky="ew", pady=(8, 3)
         )
         ttk.Button(panel, text="Use Current Scales", command=self._capture_current_scales).grid(
@@ -280,12 +298,6 @@ class InterferometryApp(tk.Tk):
         self._watch_control(self.interferogram_autoscale)
         self._watch_control(self.spectrum_autoscale)
         self._watch_control(self.continuum_snr_mode)
-        for value in self.inputs.values():
-            self._watch_control(value)
-        for value in self.continuum_inputs.values():
-            self._watch_control(value)
-        for value in self.scale_inputs.values():
-            self._watch_control(value)
 
     def _build_plots(self) -> None:
         plot_frame = ttk.Frame(self, padding=(0, 10, 10, 10))
@@ -357,6 +369,7 @@ class InterferometryApp(tk.Tk):
         self._correlator = correlator
         self._blocks_per_update = self._calculate_blocks_per_update(config)
         self._overflow_count = 0
+        self._last_draw_time = 0.0
         self._running = True
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.NORMAL)
@@ -402,17 +415,19 @@ class InterferometryApp(tk.Tk):
                 processed += 1
 
             if result is not None:
-                self._draw_result(result)
+                if self._should_draw_result():
+                    self._draw_result(result)
 
+            averaging_text = self._format_averaging_status()
             if self._overflow_count:
                 self.status.set(
                     f"Running; recovered {self._overflow_count} B210 overflow(s). "
-                    f"Processed {processed}/{self._blocks_per_update} blocks. "
+                    f"Processed {processed}/{self._blocks_per_update} blocks. {averaging_text} "
                     f"{format_source_status(self._source)}"
                 )
             else:
                 self.status.set(
-                    f"Running; processed {processed} blocks/update. "
+                    f"Running; processed {processed} blocks/update. {averaging_text} "
                     f"{format_source_status(self._source)}"
                 )
         except Exception as exc:
@@ -442,12 +457,12 @@ class InterferometryApp(tk.Tk):
                     result.frequency_offsets_hz,
                     peak_lag_bin,
                     config.sample_rate_hz,
-                    edge_percent=parse_float_var(
-                        self.continuum_inputs["continuum_edge_percent"],
+                    edge_percent=parse_float_text(
+                        self._committed_continuum_inputs["continuum_edge_percent"],
                         "Continuum edge exclude",
                     ),
-                    rfi_sigma=parse_float_var(
-                        self.continuum_inputs["continuum_rfi_sigma"],
+                    rfi_sigma=parse_float_text(
+                        self._committed_continuum_inputs["continuum_rfi_sigma"],
                         "Continuum RFI sigma",
                     ),
                 )
@@ -484,10 +499,11 @@ class InterferometryApp(tk.Tk):
 
         self.canvas.draw_idle()
 
-    def _read_config(self) -> ObservationConfig:
+    def _read_config(self, raw_inputs: dict[str, str] | None = None) -> ObservationConfig:
+        raw_inputs = self._committed_inputs if raw_inputs is None else raw_inputs
         values: dict[str, float | int | str] = {}
-        for key, var in self.inputs.items():
-            raw = var.get().strip()
+        for key, _, _default in FIELD_DEFAULTS:
+            raw = raw_inputs[key].strip()
             if key == "b210_device_args":
                 values[key] = raw
             elif key in {
@@ -543,6 +559,25 @@ class InterferometryApp(tk.Tk):
         blocks = ceil(samples_per_update / config.bins)
         return max(1, min(config.b210_process_blocks_per_update, blocks))
 
+    def _should_draw_result(self) -> bool:
+        now = monotonic()
+        draw_interval = GUI_REFRESH_MS / 1000.0
+        if (
+            self.source_mode.get() == "B210 / SoapySDR"
+            and self._correlator is not None
+            and self._correlator.averaging_fill_fraction < 1.0
+        ):
+            draw_interval = AVERAGING_DRAW_REFRESH_MS / 1000.0
+        if self._last_draw_time and now - self._last_draw_time < draw_interval:
+            return False
+        self._last_draw_time = now
+        return True
+
+    def _format_averaging_status(self) -> str:
+        if self._correlator is None or self._correlator.averaging_fill_fraction >= 1.0:
+            return "Averaging stable."
+        return f"Averaging {self._correlator.averaging_fill_fraction * 100.0:.1f}%."
+
     def _watch_control(self, value: tk.StringVar) -> None:
         value.trace_add("write", lambda *_args: self._on_control_changed())
 
@@ -554,6 +589,34 @@ class InterferometryApp(tk.Tk):
         self._apply_plot_scales(draw=False)
         if self._running:
             self._schedule_runtime_apply()
+
+    def _commit_text_fields(self, _event=None) -> str:
+        new_inputs = {key: value.get() for key, value in self.inputs.items()}
+        new_continuum_inputs = {key: value.get() for key, value in self.continuum_inputs.items()}
+        new_scale_inputs = {key: value.get() for key, value in self.scale_inputs.items()}
+
+        try:
+            self._read_config(new_inputs)
+            validate_continuum_inputs(new_continuum_inputs)
+            validate_scale_inputs(new_scale_inputs)
+        except Exception as exc:
+            self.status.set(f"Text fields not committed: {exc}")
+            return "break"
+
+        self._committed_inputs = new_inputs
+        self._committed_continuum_inputs = new_continuum_inputs
+        self._committed_scale_inputs = new_scale_inputs
+        self._save_settings()
+        self._apply_plot_scales(draw=True)
+
+        if self._running:
+            if self._runtime_apply_after_id is not None:
+                self.after_cancel(self._runtime_apply_after_id)
+                self._runtime_apply_after_id = None
+            self._apply_runtime_config_if_needed()
+        else:
+            self.status.set("Text fields committed")
+        return "break"
 
     def _schedule_runtime_apply(self) -> None:
         if self._runtime_apply_after_id is not None:
@@ -635,16 +698,16 @@ class InterferometryApp(tk.Tk):
     def _apply_plot_scales(self, draw: bool = True) -> None:
         try:
             if self.interferogram_autoscale.get() == "off":
-                y_min = parse_scale_value(self.scale_inputs["interferogram_y_min"])
-                y_max = parse_scale_value(self.scale_inputs["interferogram_y_max"])
+                y_min = parse_scale_value(self._committed_scale_inputs["interferogram_y_min"])
+                y_max = parse_scale_value(self._committed_scale_inputs["interferogram_y_max"])
                 validate_scale_limits(y_min, y_max)
                 self.ax_interferogram.set_ylim(
                     y_min,
                     y_max,
                 )
             if self.spectrum_autoscale.get() == "off":
-                y_min = parse_scale_value(self.scale_inputs["spectrum_y_min"])
-                y_max = parse_scale_value(self.scale_inputs["spectrum_y_max"])
+                y_min = parse_scale_value(self._committed_scale_inputs["spectrum_y_min"])
+                y_max = parse_scale_value(self._committed_scale_inputs["spectrum_y_max"])
                 validate_scale_limits(y_min, y_max)
                 self.ax_spectrum.set_ylim(
                     y_min,
@@ -663,7 +726,7 @@ class InterferometryApp(tk.Tk):
         self.scale_inputs["interferogram_y_max"].set(f"{interferogram_max:.6g}")
         self.scale_inputs["spectrum_y_min"].set(f"{spectrum_min:.6g}")
         self.scale_inputs["spectrum_y_max"].set(f"{spectrum_max:.6g}")
-        self._apply_plot_scales()
+        self._commit_text_fields()
 
     def _save_settings(self) -> None:
         settings = {
@@ -674,9 +737,9 @@ class InterferometryApp(tk.Tk):
             "spectrum_autoscale": self.spectrum_autoscale.get(),
             "continuum_snr_mode": self.continuum_snr_mode.get(),
         }
-        settings.update({key: value.get() for key, value in self.inputs.items()})
-        settings.update({key: value.get() for key, value in self.continuum_inputs.items()})
-        settings.update({key: value.get() for key, value in self.scale_inputs.items()})
+        settings.update(self._committed_inputs)
+        settings.update(self._committed_continuum_inputs)
+        settings.update(self._committed_scale_inputs)
         try:
             SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
         except OSError as exc:
@@ -698,21 +761,41 @@ def smooth_line(values: np.ndarray, bins: int) -> np.ndarray:
     return np.convolve(values, kernel, mode="same")
 
 
-def parse_scale_value(value: tk.StringVar) -> float:
-    parsed = float(value.get().strip())
+def parse_scale_value(value: str) -> float:
+    parsed = float(value.strip())
     if not np.isfinite(parsed):
         raise ValueError("Scale limits must be finite numbers.")
     return parsed
 
 
-def parse_float_var(value: tk.StringVar, label: str) -> float:
+def parse_float_text(value: str, label: str) -> float:
     try:
-        parsed = float(value.get().strip())
+        parsed = float(value.strip())
     except ValueError as exc:
         raise ValueError(f"{label} must be numeric.") from exc
     if not np.isfinite(parsed):
         raise ValueError(f"{label} must be finite.")
     return parsed
+
+
+def validate_continuum_inputs(values: dict[str, str]) -> None:
+    edge_percent = parse_float_text(values["continuum_edge_percent"], "Continuum edge exclude")
+    rfi_sigma = parse_float_text(values["continuum_rfi_sigma"], "Continuum RFI sigma")
+    if edge_percent < 0 or edge_percent >= 50:
+        raise ValueError("Continuum edge exclude must be in the range 0 to <50 percent.")
+    if rfi_sigma < 0:
+        raise ValueError("Continuum RFI sigma must not be negative.")
+
+
+def validate_scale_inputs(values: dict[str, str]) -> None:
+    validate_scale_limits(
+        parse_scale_value(values["interferogram_y_min"]),
+        parse_scale_value(values["interferogram_y_max"]),
+    )
+    validate_scale_limits(
+        parse_scale_value(values["spectrum_y_min"]),
+        parse_scale_value(values["spectrum_y_max"]),
+    )
 
 
 def validate_scale_limits(y_min: float, y_max: float) -> None:
