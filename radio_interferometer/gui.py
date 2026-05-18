@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from math import ceil
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -14,24 +13,16 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 from . import __version__
+from .backend import CorrelatorBackendProcess
 from .correlator import (
-    CorrelatorConfig,
-    FXCorrelator,
     estimate_broadband_continuum_snr,
     estimate_peak_snr,
 )
-from .sources import (
-    B210ReadOverflow,
-    B210SoapySource,
-    ObservationConfig,
-    SampleSource,
-    SimulatedInterferometerSource,
-)
+from .sources import ObservationConfig
 
 GUI_REFRESH_MS = 80
 AVERAGING_DRAW_REFRESH_MS = 500
-LIVE_APPLY_DELAY_MS = 800
-SETTINGS_PATH = Path.home() / ".radio_interferometer_beta_settings.json"
+SETTINGS_PATH = Path.home() / ".radio_interferometer_delta_settings.json"
 
 FIELD_DEFAULTS = [
     ("observing_frequency_mhz", "Observing freq (MHz)", "4800.0"),
@@ -89,14 +80,11 @@ class InterferometryApp(tk.Tk):
         self.geometry("1180x780")
         self.minsize(980, 680)
 
-        self._source: SampleSource | None = None
-        self._correlator: FXCorrelator | None = None
+        self._backend: CorrelatorBackendProcess | None = None
         self._running = False
         self._latest_config: ObservationConfig | None = None
         self._latest_source_mode = "Simulator"
-        self._blocks_per_update = 1
-        self._overflow_count = 0
-        self._runtime_apply_after_id: str | None = None
+        self._latest_backend_status: dict[str, object] = {}
         self._loading_settings = True
         self._settings = load_settings()
         self._committed_inputs = {
@@ -349,15 +337,8 @@ class InterferometryApp(tk.Tk):
     def start(self) -> None:
         try:
             config = self._read_config()
-            source = self._make_source(config)
-            correlator = FXCorrelator(
-                CorrelatorConfig(
-                    sample_rate_hz=config.sample_rate_hz,
-                    bins=config.bins,
-                    averaging_blocks=config.averaging_blocks,
-                )
-            )
-            source.start()
+            backend = CorrelatorBackendProcess(config, self.source_mode.get())
+            backend.start()
         except Exception as exc:
             messagebox.showerror("Unable to start", str(exc))
             self.status.set(f"Start failed: {exc}")
@@ -365,10 +346,8 @@ class InterferometryApp(tk.Tk):
 
         self._latest_config = config
         self._latest_source_mode = self.source_mode.get()
-        self._source = source
-        self._correlator = correlator
-        self._blocks_per_update = self._calculate_blocks_per_update(config)
-        self._overflow_count = 0
+        self._backend = backend
+        self._latest_backend_status = {}
         self._last_draw_time = 0.0
         self._running = True
         self.start_button.configure(state=tk.DISABLED)
@@ -378,24 +357,24 @@ class InterferometryApp(tk.Tk):
 
     def stop(self) -> None:
         self._running = False
-        if self._source is not None:
+        if self._backend is not None:
             try:
-                self._source.stop()
+                self._backend.stop()
             except Exception as exc:
-                self.status.set(f"Stopped with source warning: {exc}")
+                self.status.set(f"Stopped with backend warning: {exc}")
             else:
                 self.status.set("Stopped")
-        self._source = None
+        self._backend = None
         self.start_button.configure(state=tk.NORMAL)
         self.stop_button.configure(state=tk.DISABLED)
 
     def reset_average(self) -> None:
-        if self._correlator is not None:
-            self._correlator.reset()
+        if self._backend is not None:
+            self._backend.reset_average()
             self.status.set("Averaging reset")
 
     def _update_loop(self) -> None:
-        if not self._running or self._source is None or self._correlator is None:
+        if not self._running or self._backend is None:
             return
 
         try:
@@ -403,33 +382,21 @@ class InterferometryApp(tk.Tk):
                 self.after(GUI_REFRESH_MS, self._update_loop)
                 return
 
-            result = None
-            processed = 0
-            for _ in range(self._blocks_per_update):
-                try:
-                    antenna_a, antenna_b = self._source.read(self._correlator.config.bins)
-                except B210ReadOverflow:
-                    self._overflow_count += 1
-                    continue
-                result = self._correlator.process(antenna_a, antenna_b)
-                processed += 1
+            if not self._backend.is_alive():
+                raise RuntimeError("Backend process stopped unexpectedly.")
 
-            if result is not None:
-                if self._should_draw_result():
-                    self._draw_result(result)
+            update = self._backend.poll_latest()
+            if update is not None:
+                self._latest_backend_status = update.status
+                if "error" in update.status:
+                    raise RuntimeError(str(update.status["error"]))
+                if update.result is not None and self._should_draw_result():
+                    self._draw_result(update.result)
 
-            averaging_text = self._format_averaging_status()
-            if self._overflow_count:
-                self.status.set(
-                    f"Running; recovered {self._overflow_count} B210 overflow(s). "
-                    f"Processed {processed}/{self._blocks_per_update} blocks. {averaging_text} "
-                    f"{format_source_status(self._source)}"
-                )
-            else:
-                self.status.set(
-                    f"Running; processed {processed} blocks/update. {averaging_text} "
-                    f"{format_source_status(self._source)}"
-                )
+            self.status.set(
+                f"Running backend. {self._format_averaging_status()} "
+                f"{format_backend_status(self._latest_backend_status)}"
+            )
         except Exception as exc:
             self.stop()
             messagebox.showerror("Runtime error", str(exc))
@@ -546,26 +513,12 @@ class InterferometryApp(tk.Tk):
 
         return ObservationConfig(**values)
 
-    def _make_source(self, config: ObservationConfig) -> SampleSource:
-        if self.source_mode.get() == "B210 / SoapySDR":
-            return B210SoapySource(config)
-        return SimulatedInterferometerSource(config)
-
-    def _calculate_blocks_per_update(self, config: ObservationConfig) -> int:
-        if self.source_mode.get() != "B210 / SoapySDR":
-            return 1
-
-        samples_per_update = config.sample_rate_hz * (GUI_REFRESH_MS / 1000.0)
-        blocks = ceil(samples_per_update / config.bins)
-        return max(1, min(config.b210_process_blocks_per_update, blocks))
-
     def _should_draw_result(self) -> bool:
         now = monotonic()
         draw_interval = GUI_REFRESH_MS / 1000.0
         if (
             self.source_mode.get() == "B210 / SoapySDR"
-            and self._correlator is not None
-            and self._correlator.averaging_fill_fraction < 1.0
+            and float(self._latest_backend_status.get("averaging_fill", 1.0)) < 1.0
         ):
             draw_interval = AVERAGING_DRAW_REFRESH_MS / 1000.0
         if self._last_draw_time and now - self._last_draw_time < draw_interval:
@@ -574,9 +527,10 @@ class InterferometryApp(tk.Tk):
         return True
 
     def _format_averaging_status(self) -> str:
-        if self._correlator is None or self._correlator.averaging_fill_fraction >= 1.0:
+        fill_fraction = float(self._latest_backend_status.get("averaging_fill", 1.0))
+        if fill_fraction >= 1.0:
             return "Averaging stable."
-        return f"Averaging {self._correlator.averaging_fill_fraction * 100.0:.1f}%."
+        return f"Averaging {fill_fraction * 100.0:.1f}%."
 
     def _watch_control(self, value: tk.StringVar) -> None:
         value.trace_add("write", lambda *_args: self._on_control_changed())
@@ -588,7 +542,7 @@ class InterferometryApp(tk.Tk):
         self._apply_plot_visibility(draw=False)
         self._apply_plot_scales(draw=False)
         if self._running:
-            self._schedule_runtime_apply()
+            self._apply_runtime_config_if_needed()
 
     def _commit_text_fields(self, _event=None) -> str:
         new_inputs = {key: value.get() for key, value in self.inputs.items()}
@@ -610,28 +564,13 @@ class InterferometryApp(tk.Tk):
         self._apply_plot_scales(draw=True)
 
         if self._running:
-            if self._runtime_apply_after_id is not None:
-                self.after_cancel(self._runtime_apply_after_id)
-                self._runtime_apply_after_id = None
             self._apply_runtime_config_if_needed()
         else:
             self.status.set("Text fields committed")
         return "break"
 
-    def _schedule_runtime_apply(self) -> None:
-        if self._runtime_apply_after_id is not None:
-            self.after_cancel(self._runtime_apply_after_id)
-        self._runtime_apply_after_id = self.after(
-            LIVE_APPLY_DELAY_MS, self._run_scheduled_runtime_apply
-        )
-
-    def _run_scheduled_runtime_apply(self) -> None:
-        self._runtime_apply_after_id = None
-        if self._running:
-            self._apply_runtime_config_if_needed()
-
     def _apply_runtime_config_if_needed(self) -> bool:
-        if self._source is None or self._correlator is None or self._latest_config is None:
+        if self._backend is None or self._latest_config is None:
             return True
 
         try:
@@ -644,47 +583,11 @@ class InterferometryApp(tk.Tk):
         if config == self._latest_config and source_mode == self._latest_source_mode:
             return True
 
-        if source_mode != self._latest_source_mode or requires_source_restart(
-            self._latest_config, config, source_mode
-        ):
-            try:
-                self._replace_running_source(config)
-            except Exception as exc:
-                self.stop()
-                messagebox.showerror("Runtime reconfiguration failed", str(exc))
-                return False
-        else:
-            try:
-                self._source.update_config(config)
-            except Exception as exc:
-                self.stop()
-                messagebox.showerror("Runtime reconfiguration failed", str(exc))
-                return False
-
-        if requires_correlator_rebuild(self._latest_config, config):
-            self._correlator = FXCorrelator(
-                CorrelatorConfig(
-                    sample_rate_hz=config.sample_rate_hz,
-                    bins=config.bins,
-                    averaging_blocks=config.averaging_blocks,
-                )
-            )
-
+        self._backend.update_config(config, source_mode)
         self._latest_config = config
         self._latest_source_mode = source_mode
-        self._blocks_per_update = self._calculate_blocks_per_update(config)
         self.status.set(f"Live settings applied; X-corr smoothing {config.averaging_blocks} blocks")
         return True
-
-    def _replace_running_source(self, config: ObservationConfig) -> None:
-        old_source = self._source
-        if old_source is not None:
-            old_source.stop()
-
-        new_source = self._make_source(config)
-        new_source.start()
-        self._source = new_source
-        self._overflow_count = 0
 
     def _apply_plot_visibility(self, draw: bool = True) -> None:
         spectrum_enabled = self.spectrum_plot_mode.get() == "on"
@@ -803,41 +706,21 @@ def validate_scale_limits(y_min: float, y_max: float) -> None:
         raise ValueError("Manual scale minimum must be less than maximum.")
 
 
-def requires_correlator_rebuild(old: ObservationConfig, new: ObservationConfig) -> bool:
-    return (
-        old.bandwidth_mhz != new.bandwidth_mhz
-        or old.bins != new.bins
-        or old.averaging_blocks != new.averaging_blocks
-    )
-
-
-def requires_source_restart(
-    old: ObservationConfig,
-    new: ObservationConfig,
-    source_mode: str,
-) -> bool:
-    if source_mode != "B210 / SoapySDR":
-        return False
-    return (
-        old.b210_device_args != new.b210_device_args
-        or old.bandwidth_mhz != new.bandwidth_mhz
-        or old.bins != new.bins
-        or old.b210_stream_chunk_samples != new.b210_stream_chunk_samples
-        or old.b210_queue_blocks != new.b210_queue_blocks
-    )
-
-
-def format_source_status(source: SampleSource | None) -> str:
-    if source is None:
-        return ""
-    status = source.status_snapshot()
+def format_backend_status(status: dict[str, object]) -> str:
     if not status:
         return ""
+    if "queued" not in status and "chunks" not in status:
+        return (
+            f"processed {status.get('processed', 0)}, "
+            f"stale plots {status.get('dropped_results', 0)}"
+        )
     return (
         f"B210 queue {status.get('queued', 0)}, "
         f"chunks {status.get('chunks', 0)}, "
         f"dropped {status.get('dropped', 0)}, "
         f"FFT blocks {status.get('reads', 0)}, "
+        f"processed {status.get('processed', 0)}, "
+        f"stale plots {status.get('dropped_results', 0)}, "
         f"overflows {status.get('overflows', 0)}, "
         f"timeouts {status.get('timeouts', 0)}"
     )

@@ -1,5 +1,16 @@
 # Version History
 
+## 0.3.0-delta - Process-Isolated Correlator Backend
+
+- Moved SDR streaming, sample reading, FFT correlation, and averaging into a
+  separate backend process.
+- Changed the Tkinter GUI to receive reduced correlator products instead of
+  reading raw B210 sample blocks directly.
+- Added a bounded result queue so stale plot updates are dropped before they can
+  slow down the streaming/correlation backend.
+- Kept committed text-entry behavior: text fields apply only after Enter.
+- Changed persisted settings to a Delta-specific settings file.
+
 ## 0.2.4-beta - Committed Inputs and Averaging Draw Throttle
 
 - Text-entry GUI parameters now commit only when the user presses Enter in an

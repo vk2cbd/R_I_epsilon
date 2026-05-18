@@ -11,6 +11,11 @@ The current build includes a deterministic simulated two-antenna source so the
 GUI and correlator can be tested without hardware. A B210 source adapter is
 included as a starting point for UHD/SoapySDR integration.
 
+The Delta build separates the realtime backend from the GUI. The backend runs
+in its own process and owns SDR streaming, FFT/correlation, and averaging. The
+Tkinter GUI receives reduced plot products through a bounded queue, so stale
+display updates can be dropped without directly interrupting raw B210 reads.
+
 ## Ubuntu Setup
 
 ```bash
@@ -85,6 +90,8 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
   the hardware stream is starved.
 - B210 plot redraw throttling while cross-correlation averaging is refilling,
   reducing GUI load during the noisiest settling period.
+- Process-isolated streaming/correlation backend. The GUI no longer performs
+  raw B210 reads or FFT correlation in the Tkinter event loop.
 - Baseline east/north/up in meters for geometric phase simulation.
 - B210 manual gain, read timeout, and optional SoapySDR device args.
 
