@@ -78,6 +78,8 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
   RFI-outlier rejection before coherent frequency-bin summing.
 - Continuous B210 streaming with a background reader thread and bounded queue,
   so plotting and FFT work do not directly interrupt SDR reads.
+- Configurable B210 stream chunk samples so hardware `readStream()` transfers
+  can be larger than the FX block size.
 - Baseline east/north/up in meters for geometric phase simulation.
 - B210 manual gain, read timeout, and optional SoapySDR device args.
 

@@ -1,3 +1,3 @@
 """Radio interferometry FX correlator application."""
 
-__version__ = "0.2.1-beta"
+__version__ = "0.2.2-beta"

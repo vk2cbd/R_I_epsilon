@@ -31,6 +31,7 @@ class ObservationConfig:
     baseline_up_m: float = 0.0
     b210_gain_db: float = 35.0
     b210_read_timeout_ms: int = 1000
+    b210_stream_chunk_samples: int = 65536
     b210_device_args: str = ""
 
     @property
@@ -133,6 +134,9 @@ class B210SoapySource(SampleSource):
         self._timeout_count = 0
         self._dropped_count = 0
         self._read_count = 0
+        self._chunk_count = 0
+        self._pending_a = np.empty(0, dtype=np.complex64)
+        self._pending_b = np.empty(0, dtype=np.complex64)
 
     def start(self) -> None:
         try:
@@ -204,6 +208,9 @@ class B210SoapySource(SampleSource):
         self._timeout_count = 0
         self._dropped_count = 0
         self._read_count = 0
+        self._chunk_count = 0
+        self._pending_a = np.empty(0, dtype=np.complex64)
+        self._pending_b = np.empty(0, dtype=np.complex64)
         self._read_thread = Thread(target=self._stream_worker, name="B210StreamReader", daemon=True)
         self._read_thread.start()
 
@@ -227,6 +234,8 @@ class B210SoapySource(SampleSource):
         self._queue_ready.clear()
         with self._queue_lock:
             self._queued_blocks.clear()
+        self._pending_a = np.empty(0, dtype=np.complex64)
+        self._pending_b = np.empty(0, dtype=np.complex64)
 
     def update_config(self, config: ObservationConfig) -> None:
         if self._sdr is None:
@@ -304,24 +313,27 @@ class B210SoapySource(SampleSource):
             "timeouts": self._timeout_count,
             "dropped": self._dropped_count,
             "reads": self._read_count,
+            "chunks": self._chunk_count,
         }
 
     def _stream_worker(self) -> None:
         try:
+            block_size = self.config.bins
+            chunk_samples = max(block_size, self.config.b210_stream_chunk_samples)
+            buffs = [
+                np.empty(chunk_samples, dtype=np.complex64),
+                np.empty(chunk_samples, dtype=np.complex64),
+            ]
+
             while not self._stop_event.is_set():
                 if self._sdr is None or self._rx_stream is None:
                     return
 
-                sample_count = self.config.bins
-                buffs = [
-                    np.empty(sample_count, dtype=np.complex64),
-                    np.empty(sample_count, dtype=np.complex64),
-                ]
                 timeout_us = max(self.config.b210_read_timeout_ms, 100) * 1000
                 result = self._sdr.readStream(
                     self._rx_stream,
                     buffs,
-                    sample_count,
+                    chunk_samples,
                     timeoutUs=timeout_us,
                 )
 
@@ -334,20 +346,47 @@ class B210SoapySource(SampleSource):
                 if result.ret <= 0:
                     raise RuntimeError(f"B210 read failed with code {result.ret}.")
 
-                block = (
-                    buffs[0][: result.ret].copy(),
-                    buffs[1][: result.ret].copy(),
-                )
-                self._read_count += 1
-                with self._queue_lock:
-                    if len(self._queued_blocks) >= self.MAX_QUEUED_BLOCKS:
-                        self._queued_blocks.popleft()
-                        self._dropped_count += 1
-                    self._queued_blocks.append(block)
-                    self._queue_ready.set()
+                self._chunk_count += 1
+                self._queue_stream_chunk(buffs[0][: result.ret], buffs[1][: result.ret], block_size)
         except Exception as exc:
             self._stream_error = exc
             self._queue_ready.set()
+
+    def _queue_stream_chunk(
+        self,
+        antenna_a: np.ndarray,
+        antenna_b: np.ndarray,
+        block_size: int,
+    ) -> None:
+        if self._pending_a.size:
+            antenna_a = np.concatenate((self._pending_a, antenna_a))
+            antenna_b = np.concatenate((self._pending_b, antenna_b))
+
+        complete_blocks = antenna_a.size // block_size
+        if complete_blocks == 0:
+            self._pending_a = antenna_a.copy()
+            self._pending_b = antenna_b.copy()
+            return
+
+        used_samples = complete_blocks * block_size
+        with self._queue_lock:
+            for block_index in range(complete_blocks):
+                start = block_index * block_size
+                stop = start + block_size
+                if len(self._queued_blocks) >= self.MAX_QUEUED_BLOCKS:
+                    self._queued_blocks.popleft()
+                    self._dropped_count += 1
+                self._queued_blocks.append(
+                    (
+                        antenna_a[start:stop].copy(),
+                        antenna_b[start:stop].copy(),
+                    )
+                )
+                self._read_count += 1
+            self._queue_ready.set()
+
+        self._pending_a = antenna_a[used_samples:].copy()
+        self._pending_b = antenna_b[used_samples:].copy()
 
 
 def parse_device_args(raw_args: str) -> dict[str, str]:

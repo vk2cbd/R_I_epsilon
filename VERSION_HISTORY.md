@@ -1,5 +1,15 @@
 # Version History
 
+## 0.2.2-beta - Large-Chunk B210 Streaming
+
+- Changed the B210 reader thread to request larger continuous `readStream()`
+  transfers instead of one hardware read per FFT block.
+- Split each returned B210 chunk into FX-sized blocks inside the app so the
+  correlator pipeline still receives normal block sizes.
+- Added a `B210 stream chunk samples` GUI field, defaulting to `65536`, for
+  tuning hardware read cadence independently of FX bin count.
+- Restart B210 streaming cleanly when the live stream chunk size changes.
+
 ## 0.2.1-beta - Continuous B210 Streaming
 
 - Added a dedicated B210 stream reader thread that continuously drains

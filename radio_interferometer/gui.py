@@ -48,6 +48,7 @@ FIELD_DEFAULTS = [
     ("baseline_up_m", "Baseline up (m)", "0.0"),
     ("b210_gain_db", "B210 gain (dB)", "70.0"),
     ("b210_read_timeout_ms", "B210 read timeout (ms)", "1000"),
+    ("b210_stream_chunk_samples", "B210 stream chunk samples", "65536"),
     ("b210_device_args", "B210 device args", "num_recv_frames=256"),
 ]
 
@@ -493,6 +494,7 @@ class InterferometryApp(tk.Tk):
                 "averaging_blocks",
                 "spectrum_smoothing_bins",
                 "b210_read_timeout_ms",
+                "b210_stream_chunk_samples",
             }:
                 values[key] = int(raw)
             else:
@@ -514,6 +516,8 @@ class InterferometryApp(tk.Tk):
             raise ValueError("Source DEC must be between -90 and 90 degrees.")
         if values["b210_read_timeout_ms"] < 100:
             raise ValueError("B210 read timeout must be at least 100 ms.")
+        if values["b210_stream_chunk_samples"] < 1024:
+            raise ValueError("B210 stream chunk samples must be at least 1024.")
         if values["b210_gain_db"] < 0:
             raise ValueError("B210 gain must not be negative.")
 
@@ -728,6 +732,7 @@ def requires_source_restart(
         old.b210_device_args != new.b210_device_args
         or old.bandwidth_mhz != new.bandwidth_mhz
         or old.bins != new.bins
+        or old.b210_stream_chunk_samples != new.b210_stream_chunk_samples
     )
 
 
@@ -739,6 +744,7 @@ def format_source_status(source: SampleSource | None) -> str:
         return ""
     return (
         f"B210 queue {status.get('queued', 0)}, "
+        f"chunks {status.get('chunks', 0)}, "
         f"dropped {status.get('dropped', 0)}, "
         f"overflows {status.get('overflows', 0)}, "
         f"timeouts {status.get('timeouts', 0)}"
