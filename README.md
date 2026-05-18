@@ -74,6 +74,8 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
 - Saved GUI settings are restored the next time the app starts.
 - Auto/manual Y-axis scaling controls for the interferogram and spectrum plots.
 - Realtime strongest-lag marker and SNR estimate on the interferogram plot.
+- Broadband continuum SNR mode with edge-channel exclusion and optional
+  RFI-outlier rejection before coherent frequency-bin summing.
 - Baseline east/north/up in meters for geometric phase simulation.
 - B210 manual gain, read timeout, and optional SoapySDR device args.
 

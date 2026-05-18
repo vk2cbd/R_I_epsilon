@@ -13,7 +13,12 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 from . import __version__
-from .correlator import CorrelatorConfig, FXCorrelator, estimate_peak_snr
+from .correlator import (
+    CorrelatorConfig,
+    FXCorrelator,
+    estimate_broadband_continuum_snr,
+    estimate_peak_snr,
+)
 from .sources import (
     B210ReadOverflow,
     B210SoapySource,
@@ -25,7 +30,7 @@ from .sources import (
 GUI_REFRESH_MS = 80
 MAX_BLOCKS_PER_UPDATE = 2048
 LIVE_APPLY_DELAY_MS = 800
-SETTINGS_PATH = Path.home() / ".radio_interferometer_alpha_settings.json"
+SETTINGS_PATH = Path.home() / ".radio_interferometer_beta_settings.json"
 
 FIELD_DEFAULTS = [
     ("observing_frequency_mhz", "Observing freq (MHz)", "4800.0"),
@@ -53,14 +58,21 @@ SCALE_FIELD_DEFAULTS = [
     ("spectrum_y_max", "Spectrum Y max", "1.0"),
 ]
 
+CONTINUUM_FIELD_DEFAULTS = [
+    ("continuum_edge_percent", "Continuum edge exclude (%)", "10.0"),
+    ("continuum_rfi_sigma", "Continuum RFI sigma (0 off)", "0.0"),
+]
+
 DEFAULT_SETTINGS = {
     "source_mode": "Simulator",
     "spectrum_plot_mode": "on",
     "phase_plot_mode": "off",
     "interferogram_autoscale": "on",
     "spectrum_autoscale": "on",
+    "continuum_snr_mode": "on",
     **{key: default for key, _, default in FIELD_DEFAULTS},
     **{key: default for key, _, default in SCALE_FIELD_DEFAULTS},
+    **{key: default for key, _, default in CONTINUUM_FIELD_DEFAULTS},
 }
 
 
@@ -196,14 +208,39 @@ class InterferometryApp(tk.Tk):
             command=self._apply_plot_scales,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        self.continuum_snr_mode = tk.StringVar(value=self._settings["continuum_snr_mode"])
+        ttk.Label(panel, text="Continuum SNR").grid(row=5, column=0, sticky="w", pady=3)
+        continuum_options = ttk.Frame(panel)
+        continuum_options.grid(row=5, column=1, sticky="w", pady=3)
+        ttk.Radiobutton(
+            continuum_options,
+            text="On",
+            variable=self.continuum_snr_mode,
+            value="on",
+        ).pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            continuum_options,
+            text="Off",
+            variable=self.continuum_snr_mode,
+            value="off",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
         self.inputs: dict[str, tk.StringVar] = {}
-        for row, (key, label, default) in enumerate(FIELD_DEFAULTS, start=5):
+        for row, (key, label, default) in enumerate(FIELD_DEFAULTS, start=6):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
             value = tk.StringVar(value=self._settings.get(key, default))
             self.inputs[key] = value
             ttk.Entry(panel, textvariable=value, width=18).grid(row=row, column=1, sticky="ew", pady=3)
 
-        scale_row = len(FIELD_DEFAULTS) + 5
+        continuum_row = len(FIELD_DEFAULTS) + 6
+        self.continuum_inputs: dict[str, tk.StringVar] = {}
+        for row, (key, label, default) in enumerate(CONTINUUM_FIELD_DEFAULTS, start=continuum_row):
+            ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
+            value = tk.StringVar(value=self._settings.get(key, default))
+            self.continuum_inputs[key] = value
+            ttk.Entry(panel, textvariable=value, width=18).grid(row=row, column=1, sticky="ew", pady=3)
+
+        scale_row = continuum_row + len(CONTINUUM_FIELD_DEFAULTS)
         self.scale_inputs: dict[str, tk.StringVar] = {}
         for row, (key, label, default) in enumerate(SCALE_FIELD_DEFAULTS, start=scale_row):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -240,7 +277,10 @@ class InterferometryApp(tk.Tk):
         self._watch_control(self.phase_plot_mode)
         self._watch_control(self.interferogram_autoscale)
         self._watch_control(self.spectrum_autoscale)
+        self._watch_control(self.continuum_snr_mode)
         for value in self.inputs.values():
+            self._watch_control(value)
+        for value in self.continuum_inputs.values():
             self._watch_control(value)
         for value in self.scale_inputs.values():
             self._watch_control(value)
@@ -276,7 +316,7 @@ class InterferometryApp(tk.Tk):
         self.snr_text = self.ax_interferogram.text(
             0.02,
             0.94,
-            "Peak: --\nSNR: --",
+            "Lag peak: --\nLag SNR: --\nContinuum SNR: --",
             transform=self.ax_interferogram.transAxes,
             va="top",
             ha="left",
@@ -388,14 +428,40 @@ class InterferometryApp(tk.Tk):
         phase = np.angle(result.cross_spectrum)
         peak_snr = estimate_peak_snr(interferogram_mag)
         peak_lag_bin = float(result.lag_bins[peak_snr.index])
+        continuum_text = "Continuum SNR: off"
+        if self.continuum_snr_mode.get() == "on":
+            try:
+                continuum = estimate_broadband_continuum_snr(
+                    result.cross_spectrum,
+                    result.frequency_offsets_hz,
+                    peak_lag_bin,
+                    config.sample_rate_hz,
+                    edge_percent=parse_float_var(
+                        self.continuum_inputs["continuum_edge_percent"],
+                        "Continuum edge exclude",
+                    ),
+                    rfi_sigma=parse_float_var(
+                        self.continuum_inputs["continuum_rfi_sigma"],
+                        "Continuum RFI sigma",
+                    ),
+                )
+                continuum_text = (
+                    f"Continuum SNR: {continuum.snr:.2f}\n"
+                    f"Cont amp: {continuum.amplitude:.3g}\n"
+                    f"Cont phase: {continuum.phase_rad:.3f} rad\n"
+                    f"Clean bins: {continuum.bins_used}"
+                )
+            except ValueError as exc:
+                continuum_text = f"Continuum SNR: {exc}"
 
         self.interferogram_line.set_data(result.lag_bins, interferogram_mag)
         self.peak_marker.set_data([peak_lag_bin], [peak_snr.peak_value])
         self.peak_vline.set_xdata([peak_lag_bin, peak_lag_bin])
         self.snr_text.set_text(
             f"Peak lag: {peak_lag_bin:.0f}\n"
-            f"SNR: {peak_snr.snr:.2f}\n"
-            f"Noise: {peak_snr.noise_floor:.3g}"
+            f"Lag SNR: {peak_snr.snr:.2f}\n"
+            f"Lag noise: {peak_snr.noise_floor:.3g}\n"
+            f"{continuum_text}"
         )
         self.ax_interferogram.set_xlim(float(result.lag_bins.min()), float(result.lag_bins.max()))
         if self.interferogram_autoscale.get() == "on":
@@ -591,8 +657,10 @@ class InterferometryApp(tk.Tk):
             "phase_plot_mode": self.phase_plot_mode.get(),
             "interferogram_autoscale": self.interferogram_autoscale.get(),
             "spectrum_autoscale": self.spectrum_autoscale.get(),
+            "continuum_snr_mode": self.continuum_snr_mode.get(),
         }
         settings.update({key: value.get() for key, value in self.inputs.items()})
+        settings.update({key: value.get() for key, value in self.continuum_inputs.items()})
         settings.update({key: value.get() for key, value in self.scale_inputs.items()})
         try:
             SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -619,6 +687,16 @@ def parse_scale_value(value: tk.StringVar) -> float:
     parsed = float(value.get().strip())
     if not np.isfinite(parsed):
         raise ValueError("Scale limits must be finite numbers.")
+    return parsed
+
+
+def parse_float_var(value: tk.StringVar, label: str) -> float:
+    try:
+        parsed = float(value.get().strip())
+    except ValueError as exc:
+        raise ValueError(f"{label} must be numeric.") from exc
+    if not np.isfinite(parsed):
+        raise ValueError(f"{label} must be finite.")
     return parsed
 
 
@@ -656,6 +734,7 @@ def load_settings() -> dict[str, str]:
         "phase_plot_mode",
         "interferogram_autoscale",
         "spectrum_autoscale",
+        "continuum_snr_mode",
     ):
         if settings[key] not in {"on", "off"}:
             settings[key] = DEFAULT_SETTINGS[key]

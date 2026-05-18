@@ -1,6 +1,12 @@
 import numpy as np
 
-from radio_interferometer.correlator import CorrelatorConfig, FXCorrelator, estimate_peak_snr
+from radio_interferometer.correlator import (
+    CorrelatorConfig,
+    FXCorrelator,
+    continuum_channel_mask,
+    estimate_broadband_continuum_snr,
+    estimate_peak_snr,
+)
 
 
 def test_fx_correlator_returns_requested_bin_count() -> None:
@@ -55,3 +61,34 @@ def test_estimate_peak_snr_excludes_peak_neighborhood() -> None:
     assert result.peak_value == 10.0
     assert result.noise_floor == 1.0
     assert result.snr == 10.0
+
+
+def test_continuum_channel_mask_excludes_edges_and_rfi() -> None:
+    spectrum = np.ones(16, dtype=np.complex128)
+    spectrum[8] = 100.0
+
+    mask = continuum_channel_mask(spectrum, edge_percent=12.5, rfi_sigma=3.0)
+
+    assert not np.any(mask[:2])
+    assert not np.any(mask[-2:])
+    assert not mask[8]
+    assert np.count_nonzero(mask) == 11
+
+
+def test_estimate_broadband_continuum_snr_uses_selected_bins() -> None:
+    bins = 64
+    offsets = np.fft.fftshift(np.fft.fftfreq(bins, d=1.0 / 1_000_000.0))
+    cross = np.ones(bins, dtype=np.complex128)
+    cross += 0.01 * np.exp(2j * np.pi * np.arange(bins) / bins)
+
+    result = estimate_broadband_continuum_snr(
+        cross,
+        offsets,
+        lag_bin=0.0,
+        sample_rate_hz=1_000_000.0,
+        edge_percent=10.0,
+    )
+
+    assert result.bins_used == 52
+    assert result.amplitude > 0.9
+    assert result.snr > 10.0

@@ -1,5 +1,14 @@
 # Version History
 
+## 0.2.0-beta - Broadband Continuum SNR
+
+- Branched from the alpha interferometer app for beta development.
+- Added broadband continuum SNR mode that phase-aligns and coherently averages
+  selected cross-spectrum bins at the detected lag.
+- Added edge-channel exclusion and optional RFI outlier rejection for continuum
+  bin selection.
+- Added continuum visibility amplitude, phase, SNR, and clean-bin count readout.
+
 ## 0.1.8-dev - Interferogram Peak Marker and SNR
 
 - Branched from the frozen `v0.1.7` baseline.
