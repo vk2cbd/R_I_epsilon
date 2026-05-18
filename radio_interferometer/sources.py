@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from math import asin, atan2, cos, degrees, radians, sin
+from threading import Event, Lock, Thread
 from time import sleep
 
 import numpy as np
@@ -59,6 +61,9 @@ class SampleSource:
     def update_config(self, config: ObservationConfig) -> None:
         self.config = config
 
+    def status_snapshot(self) -> dict[str, int]:
+        return {}
+
 
 class B210ReadOverflow(RuntimeError):
     """Raised when the B210 reports an RX overflow."""
@@ -112,10 +117,22 @@ class SimulatedInterferometerSource(SampleSource):
 class B210SoapySource(SampleSource):
     """Two-channel Ettus B210 source using SoapySDR when available."""
 
+    MAX_QUEUED_BLOCKS = 4096
+
     def __init__(self, config: ObservationConfig) -> None:
         self.config = config
         self._sdr = None
         self._rx_stream = None
+        self._read_thread: Thread | None = None
+        self._stop_event = Event()
+        self._queue_ready = Event()
+        self._queue_lock = Lock()
+        self._queued_blocks: deque[tuple[np.ndarray, np.ndarray]] = deque()
+        self._stream_error: Exception | None = None
+        self._overflow_count = 0
+        self._timeout_count = 0
+        self._dropped_count = 0
+        self._read_count = 0
 
     def start(self) -> None:
         try:
@@ -178,13 +195,38 @@ class B210SoapySource(SampleSource):
 
         self._sdr = sdr
         self._rx_stream = rx_stream
+        self._stop_event.clear()
+        self._queue_ready.clear()
+        with self._queue_lock:
+            self._queued_blocks.clear()
+        self._stream_error = None
+        self._overflow_count = 0
+        self._timeout_count = 0
+        self._dropped_count = 0
+        self._read_count = 0
+        self._read_thread = Thread(target=self._stream_worker, name="B210StreamReader", daemon=True)
+        self._read_thread.start()
 
     def stop(self) -> None:
+        self._stop_event.set()
         if self._sdr is not None and self._rx_stream is not None:
-            self._sdr.deactivateStream(self._rx_stream)
-            self._sdr.closeStream(self._rx_stream)
+            try:
+                self._sdr.deactivateStream(self._rx_stream)
+            except Exception:
+                pass
+        if self._read_thread is not None:
+            self._read_thread.join(timeout=2.0)
+        if self._sdr is not None and self._rx_stream is not None:
+            try:
+                self._sdr.closeStream(self._rx_stream)
+            except Exception:
+                pass
         self._sdr = None
         self._rx_stream = None
+        self._read_thread = None
+        self._queue_ready.clear()
+        with self._queue_lock:
+            self._queued_blocks.clear()
 
     def update_config(self, config: ObservationConfig) -> None:
         if self._sdr is None:
@@ -233,22 +275,79 @@ class B210SoapySource(SampleSource):
         self.config = config
 
     def read(self, sample_count: int) -> tuple[np.ndarray, np.ndarray]:
-        if self._sdr is None or self._rx_stream is None:
+        if self._sdr is None or self._rx_stream is None or self._read_thread is None:
             raise RuntimeError("B210 source is not running.")
 
-        buffs = [
-            np.empty(sample_count, dtype=np.complex64),
-            np.empty(sample_count, dtype=np.complex64),
-        ]
-        timeout_us = max(self.config.b210_read_timeout_ms, 100) * 1000
-        result = self._sdr.readStream(self._rx_stream, buffs, sample_count, timeoutUs=timeout_us)
-        if result.ret == -4:
-            raise B210ReadOverflow(
-                "B210 RX overflow. Try lower bandwidth, larger FX bins, or a faster computer."
-            )
-        if result.ret <= 0:
-            raise RuntimeError(f"B210 read failed with code {result.ret}.")
-        return buffs[0][: result.ret], buffs[1][: result.ret]
+        timeout_s = max(self.config.b210_read_timeout_ms, 100) / 1000.0
+        if not self._queue_ready.wait(timeout=timeout_s):
+            if self._stream_error is not None:
+                raise RuntimeError(f"B210 stream reader failed: {self._stream_error}")
+            raise RuntimeError("B210 stream queue is empty.")
+
+        with self._queue_lock:
+            if self._queued_blocks:
+                block = self._queued_blocks.popleft()
+                if not self._queued_blocks:
+                    self._queue_ready.clear()
+                return block
+
+        if self._stream_error is not None:
+            raise RuntimeError(f"B210 stream reader failed: {self._stream_error}")
+        raise RuntimeError("B210 stream queue is empty.")
+
+    def status_snapshot(self) -> dict[str, int]:
+        with self._queue_lock:
+            queued = len(self._queued_blocks)
+        return {
+            "queued": queued,
+            "overflows": self._overflow_count,
+            "timeouts": self._timeout_count,
+            "dropped": self._dropped_count,
+            "reads": self._read_count,
+        }
+
+    def _stream_worker(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                if self._sdr is None or self._rx_stream is None:
+                    return
+
+                sample_count = self.config.bins
+                buffs = [
+                    np.empty(sample_count, dtype=np.complex64),
+                    np.empty(sample_count, dtype=np.complex64),
+                ]
+                timeout_us = max(self.config.b210_read_timeout_ms, 100) * 1000
+                result = self._sdr.readStream(
+                    self._rx_stream,
+                    buffs,
+                    sample_count,
+                    timeoutUs=timeout_us,
+                )
+
+                if result.ret == -4:
+                    self._overflow_count += 1
+                    continue
+                if result.ret == -1:
+                    self._timeout_count += 1
+                    continue
+                if result.ret <= 0:
+                    raise RuntimeError(f"B210 read failed with code {result.ret}.")
+
+                block = (
+                    buffs[0][: result.ret].copy(),
+                    buffs[1][: result.ret].copy(),
+                )
+                self._read_count += 1
+                with self._queue_lock:
+                    if len(self._queued_blocks) >= self.MAX_QUEUED_BLOCKS:
+                        self._queued_blocks.popleft()
+                        self._dropped_count += 1
+                    self._queued_blocks.append(block)
+                    self._queue_ready.set()
+        except Exception as exc:
+            self._stream_error = exc
+            self._queue_ready.set()
 
 
 def parse_device_args(raw_args: str) -> dict[str, str]:

@@ -405,10 +405,14 @@ class InterferometryApp(tk.Tk):
             if self._overflow_count:
                 self.status.set(
                     f"Running; recovered {self._overflow_count} B210 overflow(s). "
-                    f"Processed {processed}/{self._blocks_per_update} blocks."
+                    f"Processed {processed}/{self._blocks_per_update} blocks. "
+                    f"{format_source_status(self._source)}"
                 )
             else:
-                self.status.set(f"Running; processed {processed} blocks/update")
+                self.status.set(
+                    f"Running; processed {processed} blocks/update. "
+                    f"{format_source_status(self._source)}"
+                )
         except Exception as exc:
             self.stop()
             messagebox.showerror("Runtime error", str(exc))
@@ -567,7 +571,7 @@ class InterferometryApp(tk.Tk):
             return True
 
         if source_mode != self._latest_source_mode or requires_source_restart(
-            self._latest_config, config
+            self._latest_config, config, source_mode
         ):
             try:
                 self._replace_running_source(config)
@@ -713,8 +717,32 @@ def requires_correlator_rebuild(old: ObservationConfig, new: ObservationConfig) 
     )
 
 
-def requires_source_restart(old: ObservationConfig, new: ObservationConfig) -> bool:
-    return old.b210_device_args != new.b210_device_args
+def requires_source_restart(
+    old: ObservationConfig,
+    new: ObservationConfig,
+    source_mode: str,
+) -> bool:
+    if source_mode != "B210 / SoapySDR":
+        return False
+    return (
+        old.b210_device_args != new.b210_device_args
+        or old.bandwidth_mhz != new.bandwidth_mhz
+        or old.bins != new.bins
+    )
+
+
+def format_source_status(source: SampleSource | None) -> str:
+    if source is None:
+        return ""
+    status = source.status_snapshot()
+    if not status:
+        return ""
+    return (
+        f"B210 queue {status.get('queued', 0)}, "
+        f"dropped {status.get('dropped', 0)}, "
+        f"overflows {status.get('overflows', 0)}, "
+        f"timeouts {status.get('timeouts', 0)}"
+    )
 
 
 def load_settings() -> dict[str, str]:

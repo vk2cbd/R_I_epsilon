@@ -1,5 +1,16 @@
 # Version History
 
+## 0.2.1-beta - Continuous B210 Streaming
+
+- Added a dedicated B210 stream reader thread that continuously drains
+  `readStream()` into a bounded block queue.
+- Changed GUI/correlator processing to consume queued B210 blocks instead of
+  directly pacing hardware reads from the GUI update loop.
+- Added B210 queue, dropped-block, overflow, and timeout counters to runtime
+  status output.
+- Restart B210 streaming cleanly when live bandwidth, bin count, or device args
+  change.
+
 ## 0.2.0-beta - Broadband Continuum SNR
 
 - Branched from the alpha interferometer app for beta development.

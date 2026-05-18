@@ -76,6 +76,8 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
 - Realtime strongest-lag marker and SNR estimate on the interferogram plot.
 - Broadband continuum SNR mode with edge-channel exclusion and optional
   RFI-outlier rejection before coherent frequency-bin summing.
+- Continuous B210 streaming with a background reader thread and bounded queue,
+  so plotting and FFT work do not directly interrupt SDR reads.
 - Baseline east/north/up in meters for geometric phase simulation.
 - B210 manual gain, read timeout, and optional SoapySDR device args.
 
