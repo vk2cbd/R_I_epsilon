@@ -1,5 +1,14 @@
 # Version History
 
+## 0.2.3-beta - B210 Stream-First Backpressure
+
+- Prioritized continuous B210 draining by dropping excess FFT blocks before
+  they create Python copy and FFT backlog.
+- Added bounded B210 queue controls so realtime display work cannot grow until
+  it starves the hardware read thread.
+- Increased default B210 hardware read chunk size to `262144` samples.
+- Added `B210 queued FFT blocks` and `B210 FFT blocks/update` GUI fields.
+
 ## 0.2.2-beta - Large-Chunk B210 Streaming
 
 - Changed the B210 reader thread to request larger continuous `readStream()`

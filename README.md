@@ -80,6 +80,9 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
   so plotting and FFT work do not directly interrupt SDR reads.
 - Configurable B210 stream chunk samples so hardware `readStream()` transfers
   can be larger than the FX block size.
+- B210 stream-first backpressure controls: queued FFT blocks and FFT
+  blocks/update limit Python processing so the app can drop display data before
+  the hardware stream is starved.
 - Baseline east/north/up in meters for geometric phase simulation.
 - B210 manual gain, read timeout, and optional SoapySDR device args.
 

@@ -28,7 +28,6 @@ from .sources import (
 )
 
 GUI_REFRESH_MS = 80
-MAX_BLOCKS_PER_UPDATE = 2048
 LIVE_APPLY_DELAY_MS = 800
 SETTINGS_PATH = Path.home() / ".radio_interferometer_beta_settings.json"
 
@@ -48,7 +47,9 @@ FIELD_DEFAULTS = [
     ("baseline_up_m", "Baseline up (m)", "0.0"),
     ("b210_gain_db", "B210 gain (dB)", "70.0"),
     ("b210_read_timeout_ms", "B210 read timeout (ms)", "1000"),
-    ("b210_stream_chunk_samples", "B210 stream chunk samples", "65536"),
+    ("b210_stream_chunk_samples", "B210 stream chunk samples", "262144"),
+    ("b210_queue_blocks", "B210 queued FFT blocks", "32"),
+    ("b210_process_blocks_per_update", "B210 FFT blocks/update", "8"),
     ("b210_device_args", "B210 device args", "num_recv_frames=256"),
 ]
 
@@ -495,6 +496,8 @@ class InterferometryApp(tk.Tk):
                 "spectrum_smoothing_bins",
                 "b210_read_timeout_ms",
                 "b210_stream_chunk_samples",
+                "b210_queue_blocks",
+                "b210_process_blocks_per_update",
             }:
                 values[key] = int(raw)
             else:
@@ -518,6 +521,10 @@ class InterferometryApp(tk.Tk):
             raise ValueError("B210 read timeout must be at least 100 ms.")
         if values["b210_stream_chunk_samples"] < 1024:
             raise ValueError("B210 stream chunk samples must be at least 1024.")
+        if values["b210_queue_blocks"] < 1:
+            raise ValueError("B210 queued FFT blocks must be at least 1.")
+        if values["b210_process_blocks_per_update"] < 1:
+            raise ValueError("B210 FFT blocks/update must be at least 1.")
         if values["b210_gain_db"] < 0:
             raise ValueError("B210 gain must not be negative.")
 
@@ -534,7 +541,7 @@ class InterferometryApp(tk.Tk):
 
         samples_per_update = config.sample_rate_hz * (GUI_REFRESH_MS / 1000.0)
         blocks = ceil(samples_per_update / config.bins)
-        return max(1, min(MAX_BLOCKS_PER_UPDATE, blocks))
+        return max(1, min(config.b210_process_blocks_per_update, blocks))
 
     def _watch_control(self, value: tk.StringVar) -> None:
         value.trace_add("write", lambda *_args: self._on_control_changed())
@@ -733,6 +740,7 @@ def requires_source_restart(
         or old.bandwidth_mhz != new.bandwidth_mhz
         or old.bins != new.bins
         or old.b210_stream_chunk_samples != new.b210_stream_chunk_samples
+        or old.b210_queue_blocks != new.b210_queue_blocks
     )
 
 
@@ -746,6 +754,7 @@ def format_source_status(source: SampleSource | None) -> str:
         f"B210 queue {status.get('queued', 0)}, "
         f"chunks {status.get('chunks', 0)}, "
         f"dropped {status.get('dropped', 0)}, "
+        f"FFT blocks {status.get('reads', 0)}, "
         f"overflows {status.get('overflows', 0)}, "
         f"timeouts {status.get('timeouts', 0)}"
     )

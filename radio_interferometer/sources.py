@@ -31,7 +31,9 @@ class ObservationConfig:
     baseline_up_m: float = 0.0
     b210_gain_db: float = 35.0
     b210_read_timeout_ms: int = 1000
-    b210_stream_chunk_samples: int = 65536
+    b210_stream_chunk_samples: int = 262144
+    b210_queue_blocks: int = 32
+    b210_process_blocks_per_update: int = 8
     b210_device_args: str = ""
 
     @property
@@ -117,8 +119,6 @@ class SimulatedInterferometerSource(SampleSource):
 
 class B210SoapySource(SampleSource):
     """Two-channel Ettus B210 source using SoapySDR when available."""
-
-    MAX_QUEUED_BLOCKS = 4096
 
     def __init__(self, config: ObservationConfig) -> None:
         self.config = config
@@ -316,6 +316,9 @@ class B210SoapySource(SampleSource):
             "chunks": self._chunk_count,
         }
 
+    def _max_queued_blocks(self) -> int:
+        return max(1, self.config.b210_queue_blocks)
+
     def _stream_worker(self) -> None:
         try:
             block_size = self.config.bins
@@ -369,13 +372,22 @@ class B210SoapySource(SampleSource):
             return
 
         used_samples = complete_blocks * block_size
+        max_queued_blocks = self._max_queued_blocks()
         with self._queue_lock:
-            for block_index in range(complete_blocks):
+            free_blocks = max_queued_blocks - len(self._queued_blocks)
+            if free_blocks <= 0:
+                self._dropped_count += complete_blocks
+                self._pending_a = antenna_a[used_samples:].copy()
+                self._pending_b = antenna_b[used_samples:].copy()
+                return
+
+            blocks_to_queue = min(complete_blocks, free_blocks)
+            first_block = complete_blocks - blocks_to_queue
+            self._dropped_count += complete_blocks - blocks_to_queue
+
+            for block_index in range(first_block, complete_blocks):
                 start = block_index * block_size
                 stop = start + block_size
-                if len(self._queued_blocks) >= self.MAX_QUEUED_BLOCKS:
-                    self._queued_blocks.popleft()
-                    self._dropped_count += 1
                 self._queued_blocks.append(
                     (
                         antenna_a[start:stop].copy(),
