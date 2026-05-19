@@ -81,6 +81,8 @@ baseline for future changes and should be pushed to `vk2cbd/test` on GitHub.
 - Realtime strongest-lag marker and SNR estimate on the interferogram plot.
 - Broadband continuum SNR mode with edge-channel exclusion and optional
   RFI-outlier rejection before coherent frequency-bin summing.
+- Realtime broadband visibility readout and optional CSV recording with a
+  user-selected output path and recording interval.
 - Continuous B210 streaming with a background reader thread and bounded queue,
   so plotting and FFT work do not directly interrupt SDR reads.
 - Configurable B210 stream chunk samples so hardware `readStream()` transfers

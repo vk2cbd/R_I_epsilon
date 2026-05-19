@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tkinter as tk
@@ -58,6 +60,36 @@ CONTINUUM_FIELD_DEFAULTS = [
     ("continuum_rfi_sigma", "Continuum RFI sigma (0 off)", "0.0"),
 ]
 
+VISIBILITY_FIELD_DEFAULTS = [
+    ("visibility_output_path", "Visibility CSV path", "visibilities.csv"),
+    ("visibility_record_interval_s", "Visibility record interval (s)", "1.0"),
+]
+
+VISIBILITY_CSV_FIELDS = [
+    "timestamp_utc",
+    "observing_frequency_mhz",
+    "intermediate_frequency_mhz",
+    "bandwidth_mhz",
+    "bins",
+    "averaging_blocks",
+    "baseline_east_m",
+    "baseline_north_m",
+    "baseline_up_m",
+    "source_ra_deg",
+    "source_dec_deg",
+    "observer_lat_deg",
+    "observer_lon_deg",
+    "lag_bin",
+    "visibility_real",
+    "visibility_imag",
+    "visibility_amp",
+    "visibility_phase_rad",
+    "visibility_snr",
+    "visibility_noise_floor",
+    "clean_bins",
+    "edge_bins_excluded",
+]
+
 DEFAULT_SETTINGS = {
     "source_mode": "Simulator",
     "spectrum_plot_mode": "on",
@@ -65,9 +97,11 @@ DEFAULT_SETTINGS = {
     "interferogram_autoscale": "on",
     "spectrum_autoscale": "on",
     "continuum_snr_mode": "on",
+    "record_visibility_mode": "off",
     **{key: default for key, _, default in FIELD_DEFAULTS},
     **{key: default for key, _, default in SCALE_FIELD_DEFAULTS},
     **{key: default for key, _, default in CONTINUUM_FIELD_DEFAULTS},
+    **{key: default for key, _, default in VISIBILITY_FIELD_DEFAULTS},
 }
 
 
@@ -93,10 +127,14 @@ class InterferometryApp(tk.Tk):
         self._committed_continuum_inputs = {
             key: self._settings.get(key, default) for key, _, default in CONTINUUM_FIELD_DEFAULTS
         }
+        self._committed_visibility_inputs = {
+            key: self._settings.get(key, default) for key, _, default in VISIBILITY_FIELD_DEFAULTS
+        }
         self._committed_scale_inputs = {
             key: self._settings.get(key, default) for key, _, default in SCALE_FIELD_DEFAULTS
         }
         self._last_draw_time = 0.0
+        self._last_visibility_record_time = 0.0
 
         self._build_controls()
         self._build_plots()
@@ -227,8 +265,25 @@ class InterferometryApp(tk.Tk):
             value="off",
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        self.record_visibility_mode = tk.StringVar(value=self._settings["record_visibility_mode"])
+        ttk.Label(panel, text="Record visibilities").grid(row=6, column=0, sticky="w", pady=3)
+        record_options = ttk.Frame(panel)
+        record_options.grid(row=6, column=1, sticky="w", pady=3)
+        ttk.Radiobutton(
+            record_options,
+            text="On",
+            variable=self.record_visibility_mode,
+            value="on",
+        ).pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            record_options,
+            text="Off",
+            variable=self.record_visibility_mode,
+            value="off",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
         self.inputs: dict[str, tk.StringVar] = {}
-        for row, (key, label, default) in enumerate(FIELD_DEFAULTS, start=6):
+        for row, (key, label, default) in enumerate(FIELD_DEFAULTS, start=7):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
             value = tk.StringVar(value=self._settings.get(key, default))
             self.inputs[key] = value
@@ -236,7 +291,7 @@ class InterferometryApp(tk.Tk):
             entry.grid(row=row, column=1, sticky="ew", pady=3)
             entry.bind("<Return>", self._commit_text_fields)
 
-        continuum_row = len(FIELD_DEFAULTS) + 6
+        continuum_row = len(FIELD_DEFAULTS) + 7
         self.continuum_inputs: dict[str, tk.StringVar] = {}
         for row, (key, label, default) in enumerate(CONTINUUM_FIELD_DEFAULTS, start=continuum_row):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -246,7 +301,17 @@ class InterferometryApp(tk.Tk):
             entry.grid(row=row, column=1, sticky="ew", pady=3)
             entry.bind("<Return>", self._commit_text_fields)
 
-        scale_row = continuum_row + len(CONTINUUM_FIELD_DEFAULTS)
+        visibility_row = continuum_row + len(CONTINUUM_FIELD_DEFAULTS)
+        self.visibility_inputs: dict[str, tk.StringVar] = {}
+        for row, (key, label, default) in enumerate(VISIBILITY_FIELD_DEFAULTS, start=visibility_row):
+            ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
+            value = tk.StringVar(value=self._settings.get(key, default))
+            self.visibility_inputs[key] = value
+            entry = ttk.Entry(panel, textvariable=value, width=18)
+            entry.grid(row=row, column=1, sticky="ew", pady=3)
+            entry.bind("<Return>", self._commit_text_fields)
+
+        scale_row = visibility_row + len(VISIBILITY_FIELD_DEFAULTS)
         self.scale_inputs: dict[str, tk.StringVar] = {}
         for row, (key, label, default) in enumerate(SCALE_FIELD_DEFAULTS, start=scale_row):
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -278,6 +343,10 @@ class InterferometryApp(tk.Tk):
         ttk.Label(panel, textvariable=self.status, wraplength=240).grid(
             row=button_row + 3, column=0, columnspan=2, sticky="w"
         )
+        self.visibility_status = tk.StringVar(value="Visibility: --")
+        ttk.Label(panel, textvariable=self.visibility_status, wraplength=240).grid(
+            row=button_row + 4, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        )
         panel.columnconfigure(1, weight=1)
 
         self._watch_control(self.source_mode)
@@ -286,6 +355,7 @@ class InterferometryApp(tk.Tk):
         self._watch_control(self.interferogram_autoscale)
         self._watch_control(self.spectrum_autoscale)
         self._watch_control(self.continuum_snr_mode)
+        self._watch_control(self.record_visibility_mode)
 
     def _build_plots(self) -> None:
         plot_frame = ttk.Frame(self, padding=(0, 10, 10, 10))
@@ -416,6 +486,7 @@ class InterferometryApp(tk.Tk):
         phase = np.angle(result.cross_spectrum)
         peak_snr = estimate_peak_snr(interferogram_mag)
         peak_lag_bin = float(result.lag_bins[peak_snr.index])
+        continuum = None
         continuum_text = "Continuum SNR: off"
         if self.continuum_snr_mode.get() == "on":
             try:
@@ -441,6 +512,37 @@ class InterferometryApp(tk.Tk):
                 )
             except ValueError as exc:
                 continuum_text = f"Continuum SNR: {exc}"
+        elif self.record_visibility_mode.get() == "on":
+            try:
+                continuum = estimate_broadband_continuum_snr(
+                    result.cross_spectrum,
+                    result.frequency_offsets_hz,
+                    peak_lag_bin,
+                    config.sample_rate_hz,
+                    edge_percent=parse_float_text(
+                        self._committed_continuum_inputs["continuum_edge_percent"],
+                        "Continuum edge exclude",
+                    ),
+                    rfi_sigma=parse_float_text(
+                        self._committed_continuum_inputs["continuum_rfi_sigma"],
+                        "Continuum RFI sigma",
+                    ),
+                )
+            except ValueError:
+                continuum = None
+
+        if continuum is not None:
+            self.visibility_status.set(
+                "Visibility: "
+                f"Re {continuum.visibility.real:.4g}, "
+                f"Im {continuum.visibility.imag:.4g}, "
+                f"Amp {continuum.amplitude:.4g}, "
+                f"Phase {continuum.phase_rad:.4f} rad, "
+                f"SNR {continuum.snr:.2f}"
+            )
+            self._record_visibility_if_needed(config, continuum, peak_lag_bin)
+        else:
+            self.visibility_status.set("Visibility: --")
 
         self.interferogram_line.set_data(result.lag_bins, interferogram_mag)
         self.peak_marker.set_data([peak_lag_bin], [peak_snr.peak_value])
@@ -547,11 +649,13 @@ class InterferometryApp(tk.Tk):
     def _commit_text_fields(self, _event=None) -> str:
         new_inputs = {key: value.get() for key, value in self.inputs.items()}
         new_continuum_inputs = {key: value.get() for key, value in self.continuum_inputs.items()}
+        new_visibility_inputs = {key: value.get() for key, value in self.visibility_inputs.items()}
         new_scale_inputs = {key: value.get() for key, value in self.scale_inputs.items()}
 
         try:
             self._read_config(new_inputs)
             validate_continuum_inputs(new_continuum_inputs)
+            validate_visibility_inputs(new_visibility_inputs)
             validate_scale_inputs(new_scale_inputs)
         except Exception as exc:
             self.status.set(f"Text fields not committed: {exc}")
@@ -559,6 +663,7 @@ class InterferometryApp(tk.Tk):
 
         self._committed_inputs = new_inputs
         self._committed_continuum_inputs = new_continuum_inputs
+        self._committed_visibility_inputs = new_visibility_inputs
         self._committed_scale_inputs = new_scale_inputs
         self._save_settings()
         self._apply_plot_scales(draw=True)
@@ -631,6 +736,63 @@ class InterferometryApp(tk.Tk):
         self.scale_inputs["spectrum_y_max"].set(f"{spectrum_max:.6g}")
         self._commit_text_fields()
 
+    def _record_visibility_if_needed(self, config, continuum, peak_lag_bin: float) -> None:
+        if self.record_visibility_mode.get() != "on":
+            return
+
+        try:
+            interval_s = parse_float_text(
+                self._committed_visibility_inputs["visibility_record_interval_s"],
+                "Visibility record interval",
+            )
+            now = monotonic()
+            if interval_s > 0 and now - self._last_visibility_record_time < interval_s:
+                return
+
+            output_path = Path(
+                self._committed_visibility_inputs["visibility_output_path"]
+            ).expanduser()
+            if not output_path.is_absolute():
+                output_path = Path.cwd() / output_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not output_path.exists() or output_path.stat().st_size == 0
+
+            timestamp = datetime.now(timezone.utc).isoformat()
+            with output_path.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=VISIBILITY_CSV_FIELDS)
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(
+                    {
+                        "timestamp_utc": timestamp,
+                        "observing_frequency_mhz": config.observing_frequency_mhz,
+                        "intermediate_frequency_mhz": config.intermediate_frequency_mhz,
+                        "bandwidth_mhz": config.bandwidth_mhz,
+                        "bins": config.bins,
+                        "averaging_blocks": config.averaging_blocks,
+                        "baseline_east_m": config.baseline_east_m,
+                        "baseline_north_m": config.baseline_north_m,
+                        "baseline_up_m": config.baseline_up_m,
+                        "source_ra_deg": config.ra_deg,
+                        "source_dec_deg": config.dec_deg,
+                        "observer_lat_deg": config.observer_lat_deg,
+                        "observer_lon_deg": config.observer_lon_deg,
+                        "lag_bin": peak_lag_bin,
+                        "visibility_real": continuum.visibility.real,
+                        "visibility_imag": continuum.visibility.imag,
+                        "visibility_amp": continuum.amplitude,
+                        "visibility_phase_rad": continuum.phase_rad,
+                        "visibility_snr": continuum.snr,
+                        "visibility_noise_floor": continuum.noise_floor,
+                        "clean_bins": continuum.bins_used,
+                        "edge_bins_excluded": continuum.edge_bins_excluded,
+                    }
+                )
+            self._last_visibility_record_time = now
+        except OSError as exc:
+            self.record_visibility_mode.set("off")
+            self.status.set(f"Visibility recording stopped: {exc}")
+
     def _save_settings(self) -> None:
         settings = {
             "source_mode": self.source_mode.get(),
@@ -639,9 +801,11 @@ class InterferometryApp(tk.Tk):
             "interferogram_autoscale": self.interferogram_autoscale.get(),
             "spectrum_autoscale": self.spectrum_autoscale.get(),
             "continuum_snr_mode": self.continuum_snr_mode.get(),
+            "record_visibility_mode": self.record_visibility_mode.get(),
         }
         settings.update(self._committed_inputs)
         settings.update(self._committed_continuum_inputs)
+        settings.update(self._committed_visibility_inputs)
         settings.update(self._committed_scale_inputs)
         try:
             SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -688,6 +852,15 @@ def validate_continuum_inputs(values: dict[str, str]) -> None:
         raise ValueError("Continuum edge exclude must be in the range 0 to <50 percent.")
     if rfi_sigma < 0:
         raise ValueError("Continuum RFI sigma must not be negative.")
+
+
+def validate_visibility_inputs(values: dict[str, str]) -> None:
+    output_path = values["visibility_output_path"].strip()
+    if not output_path:
+        raise ValueError("Visibility CSV path must not be empty.")
+    interval_s = parse_float_text(values["visibility_record_interval_s"], "Visibility record interval")
+    if interval_s < 0:
+        raise ValueError("Visibility record interval must be 0 or greater.")
 
 
 def validate_scale_inputs(values: dict[str, str]) -> None:
@@ -744,6 +917,7 @@ def load_settings() -> dict[str, str]:
         "interferogram_autoscale",
         "spectrum_autoscale",
         "continuum_snr_mode",
+        "record_visibility_mode",
     ):
         if settings[key] not in {"on", "off"}:
             settings[key] = DEFAULT_SETTINGS[key]

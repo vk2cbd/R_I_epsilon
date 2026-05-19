@@ -1,5 +1,14 @@
 # Version History
 
+## 0.3.1-delta - Broadband Visibility Display and Recording
+
+- Added realtime broadband visibility readout with real, imaginary, amplitude,
+  phase, and SNR values.
+- Added visibility recording controls for on/off, CSV output path, and recording
+  interval.
+- CSV visibility recording writes integrated broadband continuum visibility rows
+  for post-processing.
+
 ## 0.3.0-delta - Process-Isolated Correlator Backend
 
 - Moved SDR streaming, sample reading, FFT correlation, and averaging into a
