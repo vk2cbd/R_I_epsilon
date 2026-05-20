@@ -1,0 +1,39 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<title>Radio Interferometry App: One-Page User Guide</title>
+<style>
+body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; line-height: 1.25; color: #1f2933; }
+h1 { font-size: 18pt; color: #17365d; margin-bottom: 10pt; }
+h2 { font-size: 13pt; color: #1f4e79; margin-top: 12pt; margin-bottom: 4pt; }
+p { margin: 0 0 7pt 0; }
+code { font-family: Consolas, monospace; }
+</style>
+</head>
+<body>
+<h1>Radio Interferometry App: One-Page User Guide</h1>
+<p>This app compares two receiver inputs from either the built-in simulator or an Ettus B210 SDR. It calculates the complex correlation between the two inputs and displays three main observing products: a lag-domain interferogram, a cross-correlation spectrum, and phase. It can also display and record a broadband visibility value for later analysis.</p>
+
+<h2>Starting the App</h2>
+<p>On Ubuntu, install Python, Tkinter, UHD/SoapySDR if using the B210, then run:</p>
+<p><code>python3 main.py</code></p>
+<p>Choose <code>Simulator</code> for software testing or <code>B210 / SoapySDR</code> for hardware. For B210 use, check that <code>uhd_find_devices</code>, <code>uhd_usrp_probe</code>, and <code>SoapySDRUtil --find</code> can see the device before starting.</p>
+
+<h2>Important GUI Fields</h2>
+<p><code>Observing freq (MHz)</code> is the sky/RF frequency used for phase and visibility interpretation. <code>B210 tune IF (MHz)</code> is the frequency the SDR is tuned to. <code>Source RA/DEC</code> and <code>Observer lat/lon</code> describe the target and observing site. <code>Bandwidth (MHz)</code> sets the SDR sample rate and displayed frequency span. <code>FX bins</code> sets the number of frequency channels. More bins give finer frequency resolution but more CPU load.</p>
+<p><code>X-corr smoothing blocks</code> controls time integration of the complex visibility. Larger values reduce noise, but if the fringe phase changes during the integration, too much smoothing can reduce or smear the fringe. <code>Spectrum smoothing bins</code> smooths the displayed spectrum envelope only.</p>
+<p><code>Baseline east/north/up</code> describes antenna separation for simulation and future geometric delay work. <code>B210 gain</code>, <code>B210 read timeout</code>, <code>B210 stream chunk samples</code>, <code>B210 queued FFT blocks</code>, <code>B210 FFT blocks/update</code>, and <code>B210 device args</code> control hardware acquisition and buffering. The default device args include <code>num_recv_frames=256</code>.</p>
+<p>Text fields apply only after pressing Enter in a field. Radio buttons apply immediately.</p>
+
+<h2>Plots and Readouts</h2>
+<p>The top plot is the realtime interferogram. The strongest lag peak is marked and reported with lag SNR. The lower plot shows cross-correlation spectrum amplitude; phase can be turned on or off. Autoscale can be enabled or manual Y-axis limits can be used.</p>
+<p>The broadband visibility readout shows one integrated continuum value: real part, imaginary part, amplitude, phase, and SNR. This is usually more useful for weak continuum sources than looking at noisy per-bin phase alone.</p>
+
+<h2>Recording Visibilities</h2>
+<p>Set <code>Record visibilities</code> to <code>On</code>, choose <code>Visibility CSV path</code>, and set <code>Visibility record interval (s)</code>. A value of <code>1.0</code> records about once per second. A value of <code>0</code> records every backend update. The file is CSV format with a header row and one row per recorded broadband visibility sample. It records integrated visibility, not raw SDR data.</p>
+
+<h2>Getting Good Results</h2>
+<p>Start in simulator mode to verify the GUI. With the B210, begin with modest bandwidth if streaming is unstable, then increase bandwidth. Use enough <code>X-corr smoothing blocks</code> to reduce noise, but avoid values so large that fringe motion is averaged away. For weak sources, trust integrated broadband visibility more than individual noisy phase bins. If <code>overflows</code> rise or the B210 LEDs indicate unstable streaming, reduce bandwidth, reduce processing load, increase FFT bins, or revisit hardware USB connection and UHD/SoapySDR setup.</p>
+<p>The current safe development base is the process-isolated Delta visibility-recording version. Do not use the deleted Epsilon GUI-refresh-control experiment as a base because it caused Linux machine crashes during testing.</p>
+</body>
+</html>

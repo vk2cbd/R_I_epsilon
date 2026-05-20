@@ -1,0 +1,37 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<title>Radio Interferometry App: Architecture Overview</title>
+<style>
+body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; line-height: 1.25; color: #1f2933; }
+h1 { font-size: 18pt; color: #17365d; margin-bottom: 10pt; }
+h2 { font-size: 13pt; color: #1f4e79; margin-top: 12pt; margin-bottom: 4pt; }
+p { margin: 0 0 7pt 0; }
+code { font-family: Consolas, monospace; }
+</style>
+</head>
+<body>
+<h1>Radio Interferometry App: Architecture Overview</h1>
+<p>This application is a Python 3 radio-interferometry prototype for two coherent receiver channels, currently aimed at an Ettus B210 SDR or a built-in simulator. It measures how similar the two received signals are as a function of frequency and delay. That similarity is called the complex cross-correlation or visibility. The app is intended as a development platform rather than a finished observatory package.</p>
+
+<h2>High-Level Architecture</h2>
+<p>The program starts from <code>main.py</code>, which launches the Tkinter GUI in <code>radio_interferometer/gui.py</code>. The GUI collects observation settings, displays plots, shows status, and optionally records broadband visibility values to CSV. To reduce the chance that plotting interrupts SDR streaming, the actual sample handling runs in a separate backend process implemented in <code>radio_interferometer/backend.py</code>.</p>
+<p>The backend owns the selected sample source. In simulator mode it uses <code>SimulatedInterferometerSource</code>; in hardware mode it uses <code>B210SoapySource</code>, both defined in <code>radio_interferometer/sources.py</code>. The B210 path uses SoapySDR/UHD to configure two RX channels, set sample rate, RF bandwidth, IF tune frequency, manual gain, and device arguments. It then starts a time-aligned two-channel RX stream and continuously reads complex samples.</p>
+
+<h2>Data Flow</h2>
+<p>The source produces two complex sample streams, one for each antenna/input. The backend passes matching blocks of samples into the FX correlator in <code>radio_interferometer/correlator.py</code>. "F" means each block is Fourier transformed into frequency bins. "X" means the app multiplies one spectrum by the complex conjugate of the other:</p>
+<p><code>cross_spectrum = FFT(A) * conj(FFT(B))</code></p>
+<p>This complex cross-spectrum is integrated over time using the GUI field <code>X-corr smoothing blocks</code>. The integrated result is sent to the GUI as reduced data: cross-correlation spectrum, phase, and lag-domain interferogram. The GUI does not receive or plot raw SDR sample streams.</p>
+<p>The interferogram is produced by inverse FFT of the integrated cross-spectrum. A peak marker identifies the strongest lag bin and estimates a basic lag SNR. Broadband continuum visibility is calculated by selecting clean frequency bins, phase-aligning them to the detected lag, and averaging them into one complex value with real, imaginary, amplitude, phase, and SNR readouts.</p>
+
+<h2>GUI and Runtime Control</h2>
+<p>Most text-entry parameters are committed only when the user presses Enter. This prevents half-typed values from being applied while the app is running. Plot visibility, autoscale controls, continuum SNR on/off, and visibility recording on/off use radio buttons. Settings are saved in the user home directory and restored at startup.</p>
+<p>The GUI can record broadband visibilities to a CSV file. It writes integrated, reduced visibility rows rather than raw samples. The output includes timestamp, observing setup, baseline, source/observer coordinates, lag bin, complex visibility, amplitude, phase, SNR, noise floor, and clean-bin count.</p>
+
+<h2>Issues Addressed</h2>
+<p>Earlier versions read and processed samples directly in the GUI loop, which could make B210 streaming intermittent. Later versions added background streaming, larger hardware reads, and bounded queues. The current safe architecture separates GUI and backend processes so plotting load is less likely to interrupt sample handling. A later experiment that removed bounded dropping caused machine instability and must not be used as a development base.</p>
+
+<h2>Future Development</h2>
+<p>Likely next steps are better phase handling, delay-slope fitting/removal, richer visibility recording formats such as HDF5 or UVFITS-like structures, calibration tools, source tracking/fringe rotation, more robust B210 diagnostics, and eventually a lower-level C++/GNU Radio streaming backend if full-rate continuous acquisition remains beyond Python's reliable limits.</p>
+</body>
+</html>
