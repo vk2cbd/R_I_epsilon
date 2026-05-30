@@ -1,5 +1,12 @@
 # Version History
 
+## 0.3.1-epsilon - Epsilon Identity Fix
+
+- Corrected the app version suffix from Delta to Epsilon.
+- Changed persisted GUI settings to use an Epsilon-specific settings file.
+- No functional GUI, correlator, backend, SDR, visibility, or documentation
+  behaviour was changed.
+
 ## 0.3.1-delta - Broadband Visibility Display and Recording
 
 - Added realtime broadband visibility readout with real, imaginary, amplitude,

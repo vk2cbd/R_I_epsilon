@@ -24,7 +24,7 @@ from .sources import ObservationConfig
 
 GUI_REFRESH_MS = 80
 AVERAGING_DRAW_REFRESH_MS = 500
-SETTINGS_PATH = Path.home() / ".radio_interferometer_delta_settings.json"
+SETTINGS_PATH = Path.home() / ".radio_interferometer_epsilon_settings.json"
 
 FIELD_DEFAULTS = [
     ("observing_frequency_mhz", "Observing freq (MHz)", "4800.0"),
